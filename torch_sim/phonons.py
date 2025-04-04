@@ -249,7 +249,7 @@ class Phonons(AtomicDisplacement):
         self,
         state: SimState,
         calculator: Optional[Callable] = None,
-        supercell: Tuple[int, int, int] = (1, 1, 1),
+        supercell: Tuple[int, int, int] = (3, 3, 3),
         name: Optional[str] = None,
         delta: float = 0.01,
         indices: Optional[torch.Tensor] = None,
@@ -284,18 +284,38 @@ class Phonons(AtomicDisplacement):
     def __call__(self, supercell: SimState) -> torch.Tensor:
         """Calculate forces on atoms in the supercell.
 
+        This method prepares the state and calls the calculator. It ensures
+        the forces are properly extracted and returned as a tensor.
+
         Args:
             supercell: SimState containing the supercell
 
         Returns:
-            torch.Tensor: Forces on atoms
+            torch.Tensor: Forces on atoms as a tensor
         """
         if self.calculator is None:
             raise ValueError("Calculator must be set.")
 
-        results = self.calculator(supercell)
+        # Clone state and reshape
+        state_copy = supercell.clone()
+        if state_copy.cell.dim() == 2:  # [3, 3] shape
+            state_copy.cell = state_copy.cell.unsqueeze(0)  # [1, 3, 3]
 
-        return results["forces"]
+        results = self.calculator(state_copy)
+
+        # Extract forces as tensor
+        if isinstance(results, dict) and "forces" in results:
+            forces = results["forces"]
+        else:
+            forces = results  # Assumes forces only
+
+        # Keep forces on correct device
+        if not isinstance(forces, torch.Tensor):
+            forces = torch.tensor(forces, dtype=self.dtype, device=self.device)
+        elif forces.device != self.device or forces.dtype != self.dtype:
+            forces = forces.to(device=self.device, dtype=self.dtype)
+
+        return forces
 
     def _check_eq_forces(
         self,
@@ -426,7 +446,7 @@ class Phonons(AtomicDisplacement):
             device=self.device,
         )
 
-        # Loop over all atomic displacements and calculate force constants
+        # Force constant calculation
         for i, a in enumerate(self.indices):
             for j, v in enumerate(["x", "y", "z"]):
                 # Get forces for negative and positive displacements
@@ -450,7 +470,7 @@ class Phonons(AtomicDisplacement):
                 fminus_av = fminus_av - fminus_sum.unsqueeze(0)
                 fplus_av = fplus_av - fplus_sum.unsqueeze(0)
 
-                # Finite difference derivative: (F- - F+) / (2*delta)
+                # Finite difference derivative
                 C_av = (fminus_av - fplus_av) / (2 * self.delta)
 
                 # Reshape
@@ -493,7 +513,9 @@ class Phonons(AtomicDisplacement):
             self.D_N[i] *= M_inv
 
     def _compute_q_dynamical_matrix(self, q_scaled: torch.Tensor) -> torch.Tensor:
-        """Compute the dynamical matrix for a given q-vector.
+        """Compute the dynamical matrix for a given q-vector using precomputed D_N.
+
+        This uses the precomputed mass-scaled dynamical matrix D_N.
 
         Args:
             q_scaled: q-vector in scaled coordinates (relative to reciprocal lattice)
@@ -504,18 +526,30 @@ class Phonons(AtomicDisplacement):
         if self.D_N is None:
             self._calculate_force_constants()
 
+        # Make sure q_scaled is a tensor
         if not isinstance(q_scaled, torch.Tensor):
             q_scaled = torch.tensor(q_scaled, dtype=self.dtype, device=self.device)
 
         if q_scaled.dim() == 1:
             q_scaled = q_scaled.unsqueeze(0)
 
-        R_cN = self.lattice_vectors.float()
+        # Use the same dtype as q_scaled to avoid dtype mismatch
+        R_cN = self.lattice_vectors.to(dtype=q_scaled.dtype)
 
         # Compute phases and transform
         # phase = exp(-i*2π*q·R)
         phase_factors = torch.exp(-2j * math.pi * torch.matmul(q_scaled, R_cN.T))
-        D_q = torch.sum(phase_factors[:, :, None, None] * self.D_N, dim=1)
+
+        # Extract the relevant part of the dynamical matrix
+        # DOF: 3*natoms x 3*natoms per cell
+        n_dof = 3 * self._natoms
+        D_q = torch.zeros((n_dof, n_dof), dtype=torch.complex128, device=self.device)
+
+        # Sum over all cells with phase factors
+        for i, phase in enumerate(phase_factors[0]):
+            if i < len(self.D_N):
+                cell_matrix = self.D_N[i]
+                D_q += phase * cell_matrix[:n_dof, :n_dof]
 
         return D_q
 
@@ -536,24 +570,27 @@ class Phonons(AtomicDisplacement):
         # Equilibrium structure forces
         eq_name = f"{self.name}.eq"
         if eq_name not in self.cache:
-            eq_forces = self.calculator(supercell)
+            eq_forces = self(supercell)
             self.cache[eq_name] = {"forces": eq_forces}
 
+        # Create workload for displacements
+        displacements = []
         for atom_idx in self.indices:
             for direction in range(3):
                 for sign in [-1, 1]:
                     disp_name = self._get_displacement_name(atom_idx, direction, sign)
+                    if disp_name not in self.cache:
+                        displacements.append((atom_idx, direction, sign, disp_name))
 
-                    if disp_name in self.cache:
-                        continue
+        # Process displacements
+        for atom_idx, direction, sign, disp_name in displacements:
+            displaced = self._displace_atom(supercell, atom_idx, direction, sign)
 
-                    displaced = self._displace_atom(
-                        supercell, atom_idx, direction, sign
-                    )
-                    forces = self.calculator(displaced)
+            # Keep on device to avoid CPU-GPU transfers
+            forces = self(displaced)
+            self.cache[disp_name] = {"forces": forces}
 
-                    self.cache[disp_name] = {"forces": forces}
-
+        # Calculate force constants with given parameters
         self._calculate_force_constants(**kwargs)
 
     def band_structure(
@@ -578,18 +615,31 @@ class Phonons(AtomicDisplacement):
         if not isinstance(path_kc, torch.Tensor):
             path_kc = torch.tensor(path_kc, dtype=self.dtype, device=self.device)
 
-        # Frequencies and modes
-        omega_kl: List[torch.Tensor] = []
-        u_kl: List[torch.Tensor] = []
+        # Pre-allocate
+        n_kpoints = path_kc.shape[0]
+        n_modes = 3 * self._natoms  # This is the physically correct number of modes
 
-        # Loop over k-points
-        for q_c in path_kc:
+        # Create tensors directly rather than lists for better performance
+        omega_k = torch.zeros(
+            (n_kpoints, n_modes), dtype=self.dtype, device=self.device
+        )
+
+        if modes:
+            u_k = torch.zeros(
+                (n_kpoints, n_modes, self._natoms, 3),
+                dtype=(
+                    torch.complex64 if self.dtype == torch.float32 else torch.complex128
+                ),
+                device=self.device,
+            )
+
+        for k, q_c in enumerate(path_kc):
             # Compute Hermitian dynamical matrix at q
             D_q = self._compute_q_dynamical_matrix(q_c)
             D_q = 0.5 * (D_q + D_q.conj().T)
 
+            # Eigenvalues
             if modes:
-                # Eigenvalues for modes
                 omega2_l, u_xl = torch.linalg.eigh(D_q)
 
                 # Sort modes
@@ -597,10 +647,8 @@ class Phonons(AtomicDisplacement):
                 omega2_l = omega2_l[sorted_idx]
                 u_xl = u_xl[:, sorted_idx]
 
-                u = u_xl.T.reshape(-1, self._natoms, 3)
-                u_kl.append(u)
+                u_k[k] = u_xl.T.reshape(-1, self._natoms, 3)
             else:
-                # Sorted Eigenvalues
                 omega2_l = torch.linalg.eigvalsh(D_q)
                 omega2_l = torch.sort(omega2_l.real)[0]
 
@@ -608,20 +656,22 @@ class Phonons(AtomicDisplacement):
             # real(sqrt(ω²)) for ω² > 0, -abs(sqrt(ω²)) for ω² < 0
             omega_l = torch.zeros_like(omega2_l, dtype=self.dtype)
 
+            # Handle very small values
+            zero_mask = torch.abs(omega2_l) < 1e-12
+            omega2_l[zero_mask] = 0.0e0
+
             pos_mask = omega2_l >= 0
             omega_l[pos_mask] = torch.sqrt(omega2_l[pos_mask].real)
 
             neg_mask = omega2_l < 0
-            omega_l[neg_mask] = -torch.abs(torch.sqrt(omega2_l[neg_mask].real))
+            # Handle negative eigenvalues
+            if torch.any(neg_mask):
+                omega_l[neg_mask] = -torch.sqrt(torch.abs(omega2_l[neg_mask]))
 
-            omega_kl.append(omega_l)
-
-        # Stack frequencies for all k-points
-        omega_kl = torch.stack(omega_kl)
+            # Store frequencies
+            omega_k[k] = omega_l
 
         if modes:
-            # Stack eigenvectors for all k-points
-            u_kl = torch.stack(u_kl)
-            return omega_kl, u_kl
+            return omega_k, u_k
 
-        return omega_kl
+        return omega_k
