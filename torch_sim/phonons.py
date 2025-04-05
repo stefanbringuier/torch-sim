@@ -2,13 +2,16 @@
 
 Inspired by the approach in ase.phonons module of Atomic Simulation Env.
 
+Motivation is to observe potential speed-ups over phonopy by keeping
+everything on device. Not seeing advantage, could be design issue.
+
 References:
 - A. H. Larsen, et al.,J. Phys.: Condens. Matter Vol. 29, 273002 (2017)
 - D. Alfe, Comput. Phys. Commun. 180, 2622 (2009)
 - Y. Wang et al., J. Phys.: Cond. Matter 22, 202201 (2010)
-
 """
 
+__status__ = "experimental, abandoned"
 __author__ = "Stefan Bringuier"
 __email__ = "stefan.bringuier@gmail.com"
 
@@ -139,12 +142,10 @@ class AtomicDisplacement:
 
         n_atoms = state.n_atoms
 
-        # Create new positions array for all atoms in supercell
         positions = torch.zeros(
             (n_atoms * self._n_cells, 3), dtype=self.dtype, device=self.device
         )
 
-        # Create arrays for atomic properties
         atomic_numbers = torch.zeros(
             n_atoms * self._n_cells,
             dtype=state.atomic_numbers.dtype,

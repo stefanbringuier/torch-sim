@@ -1,13 +1,12 @@
-"""Calculate phonon band structure for diamond Silicon using MACE potential.
+"""Calculate native phonon band structure for diamond Silicon using MACE potential.
 
-This example demonstrates how to:
-1. Optimize the structure using the MACE potential
-2. Calculate phonons using the finite displacement method with a MACE model
-3. Generate a phonon band structure along high symmetry points
-4. Plot the band structure with proper labeling of high symmetry points
+Status: testing, experimental, abandoned
+
+Issues/Bugs:
+- Negative frequencies observed for 3-bands despite good settings.
+- Not seeing any speed-ups over phonopy
 """
 
-import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from ase.build import bulk
@@ -17,7 +16,6 @@ from torch_sim.phonons import Phonons
 from torch_sim.io import atoms_to_state
 from torch_sim.models.mace import MaceModel
 from torch_sim.neighbors import vesin_nl_ts
-from torch_sim.state import state_to_atoms
 from torch_sim import optimize, frechet_cell_fire, generate_force_convergence_fn
 
 
@@ -103,13 +101,13 @@ def main():
         model=mace_model,
         optimizer=frechet_cell_fire,
         convergence_fn=convergence_fn,
-        max_steps=300,
+        max_steps=50,
         **optimizer_params,
     )
 
     npoints = 60
     supercell = (6, 6, 6)
-    delta = 0.01
+    delta = 0.05
 
     print("Running phonon calculations...")
     phonons = Phonons(
