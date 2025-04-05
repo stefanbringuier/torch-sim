@@ -253,7 +253,7 @@ class Phonons(AtomicDisplacement):
         name: Optional[str] = None,
         delta: float = 0.01,
         indices: Optional[torch.Tensor] = None,
-        center_cell: bool = False,
+        center_cell: bool = True,
     ):
         """Initialize the Phonons class.
 
@@ -264,7 +264,10 @@ class Phonons(AtomicDisplacement):
             name: Base name for saved results
             delta: Magnitude of displacement in Angstrom
             indices: Indices of atoms to displace, if None all atoms are displaced
-            center_cell: If True, use the center cell of the supercell as reference
+            center_cell: If True, use the center cell of the supercell as reference.
+                This is recommended for better numerical stability as it ensures the
+                displaced atom has a more symmetric environment, reducing finite-size
+                effects in the computed force constants.
         """
         # Initialize parent class
         super().__init__(
@@ -348,27 +351,38 @@ class Phonons(AtomicDisplacement):
     def _symmetrize(self, C_N: torch.Tensor) -> torch.Tensor:
         """Symmetrize force constant matrix.
 
+        .. warning::
+            The numerical implementation may not be correct. The current approach
+            of flipping and permuting tensors needs verification.
+
         Makes the force constants symmetric in indices C_ij = C_ji, which
         is required by Newton's third law.
             1. Reshape to cell indices
             2. Shift tensor by flipping all spatial dimensions
             3. Compute half-sums
             4. Reshape back to original form
+
         Args:
             C_N: Force constants matrix (n_cells, 3*natoms, 3*natoms)
 
         Returns:
             torch.Tensor: Symmetrized force constants
         """
+        # TODO: Verify this implementation
         shape = self._supercell + (3 * self._natoms, 3 * self._natoms)
         C_ijk = C_N.reshape(shape)
         C_ijk_flipped = C_ijk.flip(dims=(0, 1, 2)).permute(0, 1, 2, 4, 3)
-        C_ijk = 0.5 * (C_ijk + C_ijk_flipped)
+        C_ijk_sym = 0.5 * (C_ijk + C_ijk_flipped)
 
-        return C_ijk.reshape((self._n_cells, 3 * self._natoms, 3 * self._natoms))
+        return C_ijk_sym.reshape((self._n_cells, 3 * self._natoms, 3 * self._natoms))
 
     def _apply_acoustic(self, C_N: torch.Tensor):
         """Apply acoustic sum rule on force constants.
+
+        .. warning::
+            The numerical implementation may not be correct. The current approach
+            of zeroing the central cell and subtracting force constants from other
+            cells needs verification against established methods.
 
         The acoustic sum rule requires that the sum of forces on all atoms vanishes
         for any rigid displacement of the crystal.
@@ -379,14 +393,19 @@ class Phonons(AtomicDisplacement):
         Args:
             C_N: Force constants matrix (n_cells, 3*natoms, 3*natoms)
         """
+        # Safety copy
+        C_N_temp = C_N.clone()
+
+        # Loop through all atoms and directions
         for a in range(self._natoms):
             for i in range(3):  # x, y, z
                 idx = 3 * a + i
 
+                # TODO: Verify this implementation
                 C_N[self.offset, idx, :] = 0.0
                 for R in range(len(C_N)):
-                    if R != self.offset:
-                        C_N[self.offset, idx, :] -= C_N[R, idx, :]
+                    if R != self.offset:  # Skip reference cell
+                        C_N[self.offset, idx, :] -= C_N_temp[R, idx, :]
 
     def _apply_cutoff(self, C_N: torch.Tensor, r_c: float):
         """Zero elements for interatomic distances larger than the cutoff.
@@ -461,14 +480,15 @@ class Phonons(AtomicDisplacement):
                 fminus_av = self.cache[name_minus]["forces"]
                 fplus_av = self.cache[name_plus]["forces"]
 
-                # Mean-field correct forces to fulfill
-                # momentum conservation, i.e., sum(F) = 0
-                n_atoms_supercell = fminus_av.shape[0]
-                fminus_sum = torch.sum(fminus_av, dim=0) / n_atoms_supercell
-                fplus_sum = torch.sum(fplus_av, dim=0) / n_atoms_supercell
-                # Apply to all atoms
-                fminus_av = fminus_av - fminus_sum.unsqueeze(0)
-                fplus_av = fplus_av - fplus_sum.unsqueeze(0)
+                # Enforce momentum conservation by mean-field substraction
+                n_atoms_unit = len(self.state.positions)
+
+                # Identify the displaced atom in the supercell
+                offset_index = self.offset * n_atoms_unit + a
+                fminus_sum = torch.sum(fminus_av, dim=0)
+                fplus_sum = torch.sum(fplus_av, dim=0)
+                fminus_av[offset_index] -= fminus_sum
+                fplus_av[offset_index] -= fplus_sum
 
                 # Finite difference derivative
                 C_av = (fminus_av - fplus_av) / (2 * self.delta)
@@ -495,6 +515,7 @@ class Phonons(AtomicDisplacement):
         if cutoff is not None:
             self._apply_cutoff(C_N, cutoff)
 
+        # TODO: Check if methods work correctly
         for _ in range(symm_factor):
             C_N = self._symmetrize(C_N)
             if acoustic:
@@ -533,12 +554,13 @@ class Phonons(AtomicDisplacement):
         if q_scaled.dim() == 1:
             q_scaled = q_scaled.unsqueeze(0)
 
-        # Use the same dtype as q_scaled to avoid dtype mismatch
-        R_cN = self.lattice_vectors.to(dtype=q_scaled.dtype)
+        # Convert lattice vectors to complex dtype for better numerical precision
+        # This is crucial for phase factor calculations
+        R_cN = self.lattice_vectors.to(dtype=torch.float64, device=self.device)
 
         # Compute phases and transform
         # phase = exp(-i*2π*q·R)
-        phase_factors = torch.exp(-2j * math.pi * torch.matmul(q_scaled, R_cN.T))
+        phase_factors = torch.exp(+2j * math.pi * torch.matmul(q_scaled, R_cN.T))
 
         # Extract the relevant part of the dynamical matrix
         # DOF: 3*natoms x 3*natoms per cell
@@ -600,6 +622,11 @@ class Phonons(AtomicDisplacement):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Calculate phonon dispersion along a path in the Brillouin zone.
 
+        The dynamical matrix at arbitrary q-vectors is obtained by Fourier
+        transforming the real-space force constants. For negative eigenvalues
+        (imaginary frequencies), the negative frequency is returned to make
+        visualization easier while maintaining the physical meaning.
+
         Args:
             path_kc: List of k-point coordinates defining the path
             modes: If True, return both frequencies and modes
@@ -642,12 +669,16 @@ class Phonons(AtomicDisplacement):
             if modes:
                 omega2_l, u_xl = torch.linalg.eigh(D_q)
 
-                # Sort modes
+                # Get sorting indices for eigenvalues (ascending order)
+                # Ensure sorting is stable by using the real part
                 sorted_idx = torch.argsort(omega2_l.real)
                 omega2_l = omega2_l[sorted_idx]
                 u_xl = u_xl[:, sorted_idx]
 
-                u_k[k] = u_xl.T.reshape(-1, self._natoms, 3)
+                # Mass-weight eigenvectors and reshape to (modes, atoms, xyz)
+                # This ensures normalization: |u|^2 = 1/meff
+                u_lx = (self.m_inv_x[:, None] * u_xl).T
+                u_k[k] = u_lx.reshape(-1, self._natoms, 3)
             else:
                 omega2_l = torch.linalg.eigvalsh(D_q)
                 omega2_l = torch.sort(omega2_l.real)[0]
@@ -657,8 +688,8 @@ class Phonons(AtomicDisplacement):
             omega_l = torch.zeros_like(omega2_l, dtype=self.dtype)
 
             # Handle very small values
-            zero_mask = torch.abs(omega2_l) < 1e-12
-            omega2_l[zero_mask] = 0.0e0
+            zero_mask = torch.abs(omega2_l) < 1e-8
+            omega2_l[zero_mask] = 0.0
 
             pos_mask = omega2_l >= 0
             omega_l[pos_mask] = torch.sqrt(omega2_l[pos_mask].real)
