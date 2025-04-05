@@ -72,7 +72,7 @@ def test_compare_ase_torch_phonons(ar_atoms, ar_state, ar_lj_model, ase_lj_calcu
     """Compare phonon calculations between ASE and torch_sim for Argon."""
     bandpath = ar_atoms.cell.bandpath(npoints=100)
 
-    supercell = (9, 9, 9)
+    supercell = (3, 3, 3)
     delta = 0.01
 
     ase_ph = ASE_Phonons(
@@ -91,8 +91,8 @@ def test_compare_ase_torch_phonons(ar_atoms, ar_state, ar_lj_model, ase_lj_calcu
 
     bandpath_torch = torch.tensor(bandpath.kpts, dtype=torch.float64)
 
-    ase_freqs = ase_ph.band_structure(bandpath.kpts)[0]
-    torch_freqs = torch_ph.band_structure(bandpath_torch)[0].cpu().numpy()
+    ase_freqs = ase_ph.band_structure(bandpath.kpts)
+    torch_freqs = torch_ph.band_structure(bandpath_torch).cpu().numpy()
 
     # Compare the acoustic modes (should be close to zero)
     ase_acoustic = np.sort(np.abs(ase_freqs))[:3]
@@ -101,8 +101,8 @@ def test_compare_ase_torch_phonons(ar_atoms, ar_state, ar_lj_model, ase_lj_calcu
     print(f"ASE acoustic modes: {ase_acoustic}")
     print(f"torch_sim acoustic modes: {torch_acoustic}")
 
-    assert np.allclose(ase_acoustic, 0.0, atol=1e-4)
-    assert np.allclose(torch_acoustic, 0.0, atol=1e-4)
+    assert np.allclose(ase_acoustic, 0.0, atol=1e-6)
+    assert np.allclose(torch_acoustic, 0.0, atol=1e-6)
 
     ase_optical = np.sort(np.abs(ase_freqs))[3:]
     torch_optical = np.sort(np.abs(torch_freqs))[3:]

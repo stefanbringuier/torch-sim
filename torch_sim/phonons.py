@@ -221,17 +221,6 @@ class AtomicDisplacement:
         sign_name = "+" if sign > 0 else "-"
         return f"{self.name}.{atom_index}{direction_name}{sign_name}"
 
-    def __call__(self, supercell: SimState) -> torch.Tensor:
-        """Method to be overridden by derived classes.
-
-        Args:
-            supercell: SimState containing the supercell
-
-        Returns:
-            torch.Tensor: Calculated property for the supercell
-        """
-        raise NotImplementedError("Implement this method in derived classes")
-
 
 class Phonons(AtomicDisplacement):
     """Class for calculating phonon modes using the finite displacement method.
@@ -319,34 +308,6 @@ class Phonons(AtomicDisplacement):
             forces = forces.to(device=self.device, dtype=self.dtype)
 
         return forces
-
-    def _check_eq_forces(
-        self,
-    ) -> Tuple[float, float, Tuple[torch.Tensor, ...], Tuple[torch.Tensor, ...]]:
-        """Check maximum size of forces in the equilibrium structure.
-
-        Returns:
-            Tuple containing:
-                - Minimum force component
-                - Maximum force component
-                - Indices of minimum force component (atom, direction)
-                - Indices of maximum force component (atom, direction)
-        """
-        # Get equilibrium forces
-        eq_name = f"{self.name}.eq"
-        if eq_name not in self.cache:
-            raise ValueError(
-                "Equilibrium forces not computed yet. Run the calculation first."
-            )
-
-        feq_av = self.cache[eq_name]["forces"]
-
-        fmin = torch.min(feq_av)
-        fmax = torch.max(feq_av)
-        i_min = torch.where(feq_av == fmin)
-        i_max = torch.where(feq_av == fmax)
-
-        return fmin.item(), fmax.item(), i_min, i_max
 
     def _symmetrize(self, C_N: torch.Tensor) -> torch.Tensor:
         """Symmetrize force constant matrix.
