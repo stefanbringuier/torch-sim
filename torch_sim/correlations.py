@@ -1,13 +1,13 @@
 """Correlation function calculators for time series data.
 
-Module provides efficient calculator for time correlation functions,
+Module provides efficient calculator for time correlation functions [1]_,
 including both autocorrelation and cross-correlation functionality.
-LeveragesFFT-based methods for performance and supports both CPU and
+Leverages FFT-based methods [2]_ for performance and supports both CPU and
 GPU acceleration through PyTorch.
 
-The primary `CorrelationCalculator` class provides on-the-fly
-correlation calculations during simulation runs, and a `CircularBuffer`
-utility class assist in data storage without frequent reallocations.
+The ``CorrelationCalculator`` class provides on-the-fly
+correlation calculations during simulation runs, and a ``CircularBuffer``
+utility class assists in data storage without frequent reallocations.
 
 Example:
     Computing Velocity Autocorrelation Function in loop::
@@ -26,6 +26,12 @@ Example:
             if step % 1000 == 0:
                 acfs = corr_calc.get_auto_correlations()
                 # Process or save acfs...
+
+References:
+    .. [1] D. Frenkel and B. Smit, "Understanding molecular simulation: From algorithms
+       to applications", Academic Press, 2002.
+    .. [2] https://elcorto.github.io/pwtools/written/background/phonon_dos.html
+
 """
 
 __status__ = "Unit tested"
