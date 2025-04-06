@@ -28,7 +28,7 @@ Example:
                 # Process or save acfs...
 """
 
-__status__ = "experimental"
+__status__ = "Unit tested"
 __author__ = "Stefan Bringuier"
 __email__ = "stefan.bringuier@gmail.com"
 

@@ -24,6 +24,7 @@ from torch_sim import (
     units,
 )
 from torch_sim.autobatching import ChunkingAutoBatcher, HotSwappingAutoBatcher
+from torch_sim.correlations import CircularBuffer, CorrelationCalculator
 from torch_sim.integrators import npt_langevin, nve, nvt_langevin
 
 # state propagators
