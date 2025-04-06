@@ -30,7 +30,7 @@ Example:
 References:
     .. [1] D. Frenkel and B. Smit, "Understanding molecular simulation: From algorithms
        to applications", Academic Press, 2002.
-    .. [2] https://elcorto.github.io/pwtools/written/background/phonon_dos.html
+    .. [2] `pwtools: Phonon DOS <https://elcorto.github.io/pwtools/written/background/phonon_dos.html>`_
 
 """
 
