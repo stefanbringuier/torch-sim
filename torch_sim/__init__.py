@@ -7,6 +7,7 @@ from datetime import datetime
 
 from torch_sim import (
     autobatching,
+    correlations,
     elastic,
     integrators,
     io,
