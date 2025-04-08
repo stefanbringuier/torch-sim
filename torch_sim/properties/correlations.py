@@ -133,11 +133,11 @@ class CorrelationCalculator:
 
     def __init__(
         self,
-        window_size: int,
-        delta_t: int = 1,
-        properties: dict[str, Callable[[SimState], torch.Tensor]] | None = None,
-        device: torch.device | None = None,
         *,
+        window_size: int,
+        delta_t: int,
+        properties: dict[str, Callable[[SimState], torch.Tensor]],
+        device: torch.device,
         normalize: bool = True,
     ) -> None:
         """Initialize a correlation calculator.
