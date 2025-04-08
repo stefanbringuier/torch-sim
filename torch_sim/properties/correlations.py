@@ -15,7 +15,7 @@ Example:
         corr_calc = CorrelationCalculator(
             window_size=100,
             delta_t=10,
-            quantities={"velocity": lambda state: state.velocities},
+            properties={"velocity": lambda state: state.velocities},
         )
 
         for step in range(n_steps):
@@ -119,13 +119,13 @@ class CorrelationCalculator:
 
     Manage the calculation of time correlation functions during
     simulation, with support for both autocorrelation and cross-correlation
-    of arbitrary quantities. It maintains a sliding window of historical data
+    of arbitrary properties. It maintains a sliding window of historical data
     and performs efficient updates.
 
     Attributes:
         window_size: Number of steps to keep in memory
         delta_t: Steps between correlation calculations
-        quantities: Map of quantity names to their calculators
+        properties: Map of property names to their calculators
         buffers: Circular buffers for storing historical data
         correlations: Current correlation results
         device: Device where calculations are performed
@@ -135,7 +135,7 @@ class CorrelationCalculator:
         self,
         window_size: int,
         delta_t: int = 1,
-        quantities: dict[str, Callable[[SimState], torch.Tensor]] | None = None,
+        properties: dict[str, Callable[[SimState], torch.Tensor]] | None = None,
         device: torch.device | None = None,
         *,
         normalize: bool = True,
@@ -145,37 +145,37 @@ class CorrelationCalculator:
         Args:
             window_size: Number of steps to keep in memory
             delta_t: step between correlation calculations
-            quantities: Dictionary mapping names to functions that calculate
-                       quantities from a SimState
+            properties: Dictionary mapping names to functions that calculate
+                       properties from a SimState
             device: Device for tensor storage and computation
             normalize: Whether to normalize correlation functions to [0,1]
         """
         self.window_size = window_size
         self.delta_t = delta_t
-        self.quantities = quantities or {}
+        self.properties = properties or {}
         self.device = device
         self.normalize = normalize
 
         self.buffers = {
-            name: CircularBuffer(window_size, device=device) for name in self.quantities
+            name: CircularBuffer(window_size, device=device) for name in self.properties
         }
 
         self.correlations: dict[str, torch.Tensor] = {}
         self.cross_correlations: dict[tuple[str, str], torch.Tensor] = {}
 
-    def add_quantity(
+    def add_property(
         self, name: str, calculator: Callable[[SimState], torch.Tensor]
     ) -> None:
-        """Track a new simulation quantity.
+        """Track a new simulation property.
 
         Args:
-            name: Name of the quantity
-            calculator: Function that calculates quantity from a SimState
+            name: Name of the property
+            calculator: Function that calculates property from a SimState
         """
-        if name in self.quantities:
-            raise ValueError(f"Quantity {name} already exists")
+        if name in self.properties:
+            raise ValueError(f"Property {name} already exists")
 
-        self.quantities[name] = calculator
+        self.properties[name] = calculator
         self.buffers[name] = CircularBuffer(self.window_size, device=self.device)
 
     def update(self, state: SimState, step: int) -> None:
@@ -192,7 +192,7 @@ class CorrelationCalculator:
         buffer_count = 0
         buffer_total = len(self.buffers)
 
-        for name, calc in self.quantities.items():
+        for name, calc in self.properties.items():
             value = calc(state)
             self.buffers[name].append(value)
             if self.buffers[name].count > 1:
@@ -324,7 +324,7 @@ class CorrelationCalculator:
         """Get autocorrelation results.
 
         Returns:
-            Dictionary mapping quantity names to their correlation tensors
+            Dictionary mapping property names to their correlation tensors
         """
         return self.correlations
 
@@ -332,7 +332,7 @@ class CorrelationCalculator:
         """Get cross-correlation results.
 
         Returns:
-            Dictionary mapping pairs of quantity names to their
+            Dictionary mapping pairs of property names to their
             cross-correlation tensors
         """
         return self.cross_correlations
@@ -341,7 +341,7 @@ class CorrelationCalculator:
         """Reset all buffers and correlations."""
         self.buffers = {
             name: CircularBuffer(self.window_size, device=self.device)
-            for name in self.quantities
+            for name in self.properties
         }
         self.correlations = {}
         self.cross_correlations = {}
