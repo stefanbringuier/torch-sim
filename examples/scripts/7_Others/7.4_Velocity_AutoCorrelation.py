@@ -8,10 +8,6 @@
 # ]
 # ///
 
-__status__ = "Development"
-__author__ = "Stefan Bringuier"
-__email__ = "stefan.bringuier@gmail.com"
-
 from typing import Any
 
 import matplotlib.pyplot as plt
