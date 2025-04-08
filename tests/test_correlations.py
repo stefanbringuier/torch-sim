@@ -30,12 +30,6 @@ class MockState:
 
 
 @pytest.fixture
-def device() -> torch.device:
-    """Fixture for computation device."""
-    return torch.device("cpu")
-
-
-@pytest.fixture
 def buffer(device: torch.device) -> CircularBuffer:
     """Fixture for CircularBuffer instance."""
     return CircularBuffer(size=10, device=device)
