@@ -7,7 +7,6 @@ from datetime import datetime
 
 from torch_sim import (
     autobatching,
-    correlations,
     elastic,
     integrators,
     io,
@@ -24,7 +23,6 @@ from torch_sim import (
     units,
 )
 from torch_sim.autobatching import ChunkingAutoBatcher, HotSwappingAutoBatcher
-from torch_sim.correlations import CircularBuffer, CorrelationCalculator
 from torch_sim.integrators import npt_langevin, nve, nvt_langevin
 
 # state propagators
@@ -35,6 +33,7 @@ from torch_sim.optimizers import (
     unit_cell_fire,
     unit_cell_gradient_descent,
 )
+from torch_sim.properties.correlations import CorrelationCalculator
 
 # quantities
 from torch_sim.quantities import calc_kinetic_energy, calc_kT

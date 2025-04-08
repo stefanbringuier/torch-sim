@@ -14,13 +14,14 @@ Example:
 
         corr_calc = CorrelationCalculator(
             window_size=100,
-            delta_t=10,
             properties={"velocity": lambda state: state.velocities},
         )
 
         for step in range(n_steps):
             state = integrator.step(state)
-            corr_calc.update(state, step)
+            # Call update at desired frequency
+            if step % 10 == 0:  # Sample every 10 steps
+                corr_calc.update(state)
 
             # Periodically retrieve correlation functions
             if step % 1000 == 0:
@@ -124,7 +125,6 @@ class CorrelationCalculator:
 
     Attributes:
         window_size: Number of steps to keep in memory
-        delta_t: Steps between correlation calculations
         properties: Map of property names to their calculators
         buffers: Circular buffers for storing historical data
         correlations: Current correlation results
@@ -135,7 +135,6 @@ class CorrelationCalculator:
         self,
         *,
         window_size: int,
-        delta_t: int,
         properties: dict[str, Callable[[SimState], torch.Tensor]],
         device: torch.device,
         normalize: bool = True,
@@ -144,14 +143,12 @@ class CorrelationCalculator:
 
         Args:
             window_size: Number of steps to keep in memory
-            delta_t: step between correlation calculations
             properties: Dictionary mapping names to functions that calculate
                        properties from a SimState
             device: Device for tensor storage and computation
             normalize: Whether to normalize correlation functions to [0,1]
         """
         self.window_size = window_size
-        self.delta_t = delta_t
         self.properties = properties or {}
         self.device = device
         self.normalize = normalize
@@ -178,16 +175,12 @@ class CorrelationCalculator:
         self.properties[name] = calculator
         self.buffers[name] = CircularBuffer(self.window_size, device=self.device)
 
-    def update(self, state: SimState, step: int) -> None:
+    def update(self, state: SimState) -> None:
         """Update correlation calculations with new state data.
 
         Args:
             state: Current simulation state
-            step: Current simulation step
         """
-        if step % self.delta_t != 0:
-            return
-
         # Single pass update
         buffer_count = 0
         buffer_total = len(self.buffers)

@@ -17,8 +17,8 @@ from ase.build import bulk
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 
 import torch_sim as ts
-from torch_sim.correlations import CorrelationCalculator
 from torch_sim.models.lennard_jones import LennardJonesModel
+from torch_sim.properties.correlations import CorrelationCalculator
 from torch_sim.units import MetalUnits as Units
 
 
@@ -100,8 +100,7 @@ def main() -> None:
 
     corr_calc = CorrelationCalculator(
         window_size=window_size,
-        delta_t=correlation_dt,
-        quantities={"velocity": lambda s: s.velocities},  # type: ignore[attr-defined]
+        properties={"velocity": lambda s: s.velocities},  # type: ignore[attr-defined]
         device=device,
         normalize=True,
     )
@@ -117,7 +116,7 @@ def main() -> None:
         nonlocal window_count, running_avg_vacf, last_window_vacf
         nonlocal full_time, all_window_vacfs
 
-        corr_calc.update(state, step)
+        corr_calc.update(state)
         buffer_filled = corr_calc.buffers["velocity"].count
 
         if buffer_filled == window_size:
@@ -152,7 +151,7 @@ def main() -> None:
 
         return torch.tensor([window_count], device=device, dtype=dtype)
 
-    # NOTE: prop call should be divisible by correlation_dt
+    # The sampling frequency is now controlled entirely by the prop_calculators
     trajectory = "vacf_example.h5"
     reporter = ts.TrajectoryReporter(
         trajectory,
