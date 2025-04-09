@@ -13,7 +13,11 @@ from typing import Any
 import pytest
 import torch
 
-from torch_sim.properties.correlations import CircularBuffer, CorrelationCalculator
+from torch_sim.properties.correlations import (
+    CircularBuffer,
+    CorrelationCalculator,
+    VelocityAutoCorrelation,
+)
 
 
 class MockState:
@@ -27,6 +31,14 @@ class MockState:
         """Initialize mock state with provided data."""
         self.velocities = velocities
         self.device = device
+        # Required for TrajectoryReporter
+        self.n_batches = 1
+        self.batch = torch.zeros(velocities.shape[0], device=device, dtype=torch.int64)
+
+    def split(self) -> list["MockState"]:
+        """Split state into batches."""
+        # Just return self since 1 batch
+        return [self]
 
 
 @pytest.fixture
@@ -368,3 +380,107 @@ class TestCorrelationCalculator:
         assert corr_calc.buffers["velocity"].device == cuda_device
         if corr_calc.buffers["velocity"].buffer is not None:
             assert corr_calc.buffers["velocity"].buffer.device == cuda_device
+
+
+def test_velocity_autocorrelation(
+    device: torch.device, mock_state_factory: Callable
+) -> None:
+    """Test VACF calculation with cosine pattern velocities.
+
+    Test checks:
+    1. Normalized VACF(0) = 1.0
+    2. Expected periodicity
+    3. Exhibits sign changes at specific locations
+    """
+    window_size = 32
+    period = 8
+
+    vacf_calc = VelocityAutoCorrelation(
+        window_size=window_size,
+        device=device,
+        use_running_average=False,
+        normalize=True,
+    )
+
+    # Cosine velocity pattern
+    t = torch.arange(window_size, dtype=torch.float32, device=device)
+    freq = 2 * math.pi / period
+
+    velocities = []
+    for i in range(window_size):
+        # cos(ωt) pattern
+        val = torch.cos(freq * t[i])
+        vel = torch.tensor([[val, val, val]], device=device)
+        velocities.append(vel)
+
+    for vel in velocities:
+        state = mock_state_factory(vel)
+        vacf_calc(state)
+
+    vacf = vacf_calc.vacf
+    assert vacf is not None
+
+    # 1. First lag is 1.0
+    assert torch.isclose(vacf[0], torch.tensor(1.0, device=device))
+
+    # 2. Check periodicity expect
+    # positive peaks at t=0, t=8, t=16, ...
+    assert vacf[period] >= 0.5
+    assert vacf[2 * period] >= 0.5
+
+    # 3. Check negative regions
+    assert vacf[period // 2] <= -0.5
+    assert vacf[3 * period // 2] <= -0.5
+
+    # 4. Check zero-crossings expect
+    # around t=period/4, t=3*period/4, ...
+    assert abs(vacf[period // 4]) < 0.2
+    assert abs(vacf[3 * period // 4]) < 0.2
+
+    # 5. Verify the general shape
+    # min/max at [-1.0, 1.0]
+    assert torch.max(vacf) <= 1.0 + 1e-2
+    assert torch.min(vacf) >= -1.0 - 1e-2
+
+
+def test_velocity_autocorrelation_with_trajectory_reporter(
+    device: torch.device, mock_state_factory: Callable
+) -> None:
+    """Test VelocityAutoCorrelation integration with TrajectoryReporter.
+
+    This test verifies that:
+    1. ``VelocityAutoCorrelation`` as a property calculator
+    2. ``TrajectoryReporter`` calls correctly
+    """
+    from torch_sim.properties.correlations import VelocityAutoCorrelation
+    from torch_sim.trajectory import TrajectoryReporter
+
+    window_size = 20
+    vacf_calc = VelocityAutoCorrelation(
+        window_size=window_size,
+        device=device,
+        use_running_average=True,
+    )
+
+    reporter = TrajectoryReporter(
+        None,  # Don't write file
+        state_frequency=100,
+        prop_calculators={5: {"vacf": vacf_calc}},
+    )
+
+    torch.manual_seed(42)
+    n_steps = 25
+    for step in range(n_steps):
+        # Mock state
+        velocities = torch.randn(4, 3, device=device)
+        state = mock_state_factory(velocities)
+
+        props = reporter.report(state, step)
+
+        # Check if VACF was calculated
+        if step % 5 == 0:
+            assert "vacf" in props[0]
+            assert isinstance(props[0]["vacf"], torch.Tensor)
+            assert props[0]["vacf"].shape == (1,)
+
+    reporter.close()
